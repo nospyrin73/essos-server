@@ -4,7 +4,6 @@ let handlers = {
     '/login': login,
     '/find-user': findUser,
     '/join-channel': joinChannel,
-    '/open-chat': openChat,
     '/chat-message': broadcastMessage
 }
 
@@ -51,96 +50,153 @@ function respond(socket, action, status, err, body) {
 
 function login(content, socket) {
     let { username /*, password*/ } = content;
+    let isFound = false;
 
     users.forEach(user => {
-        if (user.username === username) {
+        if (!isFound && user.username === username) {
+            user.essSocket = socket;
             respond(socket, '/login', 'success', null, user);
 
-            return;
+            isFound = true;
+            console.log(`${user.username} logged in.`);
         }
     });
 
-/* ------------------ */
-/* POPULATE DATA */ 
-// to-do: replace with registration code
-    let user = {
-        username,
-        password: '',
-        channels: []
-    };
-    users.push(user);
-/* ------------------ */
+    /* ------------------ */
+    /* POPULATE DATA */
+    // to-do: replace with registration code
 
+    if (!isFound) {
+        let user = {
+            username,
+            password: '',
+            channels: [],
+            essSocket: socket
+        };
+
+        users.push(user);
+        respond(socket, '/login', 'success', null, user);
+        console.log(`${user.username} logged in.`);
+    }
+    /* ------------------ */
 
     // to-do: respond with err
     return;
 }
 
-function findUser(content, socket) {
-    let { username } = content;
-    users.forEach(user => {
-        if (user.username === username) {
-            respond(socket, '/find-user', 'success', null, user);
+function findUser(username) {
+    let user;
+
+    users.forEach(elem => {
+        if (elem.username === username) {
+            user = elem
         }
-    })
+    });
+
+    return user;
 }
 
 function joinChannel(content, socket) {
     // to-do: refactor
     let initiator;
     let target = [];
+    let id = content.id || null;
+
 
     users.forEach(user => {
         if (user.username === content.thisUser) {
             initiator = user;
-        } else if (content.otherParty.includes(user)) {
+        } else if (user.username === content.otherParty) { //|| content.otherParty.includes(user)
             target.push(user);
         }
     });
 
     if (!initiator || target.length === 0) { // if either parties aren't found
         // to-do: respond with err
+        console.log(`Didn't find someone: `);
+        console.dir(initiator);
+        console.dir(target);
     }
 
     // to-do: check if channel already exists between parties if private
+    let doesExist = false;
+    let channel;
 
-    let channel = createChannel([initiator, ...target]);
+    if (id) {
+        channels.forEach(c => {
+            if (c.id === id) {
+                channel = c;
+                doesExist = true;
 
-    channels.push(channel);
+                target.forEach(t => {
+                    t.channels.push({id: c.id, name: c.name});
+                    c.participants.push(t);
+                });
+            }
+        });
+    }
+
+    if (!doesExist) {
+        channel = createChannel([initiator, ...target], content.name, content.access);
+        // register the channel in the db
+        [initiator, ...target].forEach(user => {
+            user.channels.push({ id: channel.id, name: channel.name });
+        });
+        channels.push(channel);
+    }
 
 
 
-    // to-do: send a response to other targets as well
-    respond(socket, '/join-channel', 'success', null, channel);
+    // to-do: send a message to other targets as well
+    respond(socket, '/join-channel', 'success', null, { channel, channels: matchChannels(initiator.username) });
 }
 
-function createChannel(participants /*, access*/) {
+function createChannel(participants, name, access) {
     // to-do: refactor
     let channelID = Math.floor(Math.random() * 1000); // to-do: check if ID exists
 
-    return new Channel(channelID, participants /*, access*/);
+    // remove extra data to avoid circular references
+    let strippedParticipants = participants.map(participant => {
+        return { username: participant.username }
+    });
+
+    return new Channel(channelID, strippedParticipants, name, access);
 }
 
-function openChat(content, socket) {
-    let { channelID } = content;
-    channels.forEach(channel => {
-        if (channel.id === channelID) {
-            respond(socket, '/open-chat', null, channel);
+function matchChannels(username) {
+    let user = findUser(username);
+    let userChannels = [];
 
-            return;
-        }
-    })
+    user.channels.forEach(userChannel => {
+        channels.forEach(channel => {
+            if (userChannel.id === channel.id) userChannels.push(channel);
+        });
+    });
 
-    // err
+    return userChannels;
 }
+
+class Channel {
+    constructor(id, participants, name, access) {
+        this.id = id;
+        this.participants = participants;
+        this.access = access || 'private';
+        this.name = '';
+        participants.forEach(participant => {
+            this.name += participant.username + ' - ';
+        })
+        this.messages = [];
+    }
+}
+
 
 function broadcastMessage(content) {
-    let { channelID, message } = content;
+    let { receiver } = content;
 
     channels.forEach(channel => {
-        if (channel.id === channelID) {
-                sendMessage(message, channel);
-            };
+        if (channel.id === receiver) {
+            sendMessage(content, channel);
+        };
     });
 }
 
@@ -150,7 +206,11 @@ function sendMessage(message, channel) {
     channel.messages.push(message);
 
     channel.participants.forEach(participant => {
-        respond(participants.essSocket, '/update-chat', 'success', null, channel);
+        users.forEach(user => {
+            if (participant.username === user.username) {
+                respond(user.essSocket, '/update-chat', 'success', null, { channel, channels: matchChannels(participant.username) });
+            }
+        });
     });
 }
 
