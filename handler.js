@@ -1,17 +1,15 @@
 const { EssosProtocol, Response } = require('./essos-protocol');
 
 let handlers = {
-    '/login': login,
+    'login': login,
     '/find-user': findUser,
     '/join-channel': joinChannel,
     '/chat-message': broadcastMessage
 }
 
 function handle(request, socket) {
-    handlers[request.action](request.body, socket);
+    handlers[request.action](request.data, socket);
 }
-
-let users = []; // to-do: database
 
 /* 
     Channel: {
@@ -40,47 +38,62 @@ let users = []; // to-do: database
     }
  */
 
+let users = [];
 let channels = [];
 
-function respond(socket, action, status, err, body) {
-    let response = new Response(action, status, body);
-
+function respond(status, err, data, socket) {
+    let response = new Response('bla', status, err, data);
     socket.write(response);
 }
 
-function login(content, socket) {
-    let { username /*, password*/ } = content;
-    let isFound = false;
+/* 
+    User: {
+        username: string,
+        password: string,
+    }
+ */
 
-    users.forEach(user => {
-        if (!isFound && user.username === username) {
-            user.essSocket = socket;
-            respond(socket, '/login', 'success', null, user);
+function register(data, socket) {
+    let { username, password } = data;
 
-            isFound = true;
-            console.log(`${user.username} logged in.`);
-        }
+    // check if username's already in use
+    users.forEach((user) => {
+        if (user.username === username)
+            respond('fail', 'username already exists', null, socket);
     });
 
-    /* ------------------ */
-    /* POPULATE DATA */
-    // to-do: replace with registration code
+    // register new account
+    let newUser = {
+        username,
+        password
+    };
 
-    if (!isFound) {
-        let user = {
-            username,
-            password: '',
-            channels: [],
-            essSocket: socket
-        };
+    users.push(newUser);
+    // respond('success', null, newUser, socket);
+}
 
-        users.push(user);
-        respond(socket, '/login', 'success', null, user);
-        console.log(`${user.username} logged in.`);
+function login(data, socket) {
+    register(data, socket);
+
+    let { username, password } = data;
+    
+    for (let user of users) {
+        if (user.username === username) {
+            if (user.password !== password) {
+                respond('fail', 'wrong password', null, socket);
+
+                return;
+            }
+
+            respond('success', null, user, socket);
+            isFound = true;
+
+            return;
+        }
     }
-    /* ------------------ */
 
-    // to-do: respond with err
+    respond('fail', 'username not found', null, socket);
+
     return;
 }
 
@@ -129,7 +142,7 @@ function joinChannel(content, socket) {
                 doesExist = true;
 
                 target.forEach(t => {
-                    t.channels.push({id: c.id, name: c.name});
+                    t.channels.push({ id: c.id, name: c.name });
                     c.participants.push(t);
                 });
             }
