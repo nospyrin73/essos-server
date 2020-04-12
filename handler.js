@@ -1,71 +1,52 @@
 const { EssosProtocol, Response } = require('./essos-protocol');
+const jwt = require('jsonwebtoken');
 
 let handlers = {
     'login': login,
-    '/find-user': findUser,
-    '/join-channel': joinChannel,
-    '/chat-message': broadcastMessage
+    'load': load,
+    'load-chat': loadChat,
+    'open-direct-message': openDirectMessage,
+    'send-message': sendMessage
 }
 
 function handle(request, socket) {
     handlers[request.action](request.data, socket);
+    // to-do: send back err if no handler
 }
 
-/* 
-    Channel: {
-        id: n,
-        access: 'private' || 'party',
-        participants: [User],
-        messages: [Message]
-    }
-
-    Participant: {
-        user: n,
-    }
-
-    Message: {
-        id: n,
-        sender: User,
-        channel: n,
-        date: Date,
-        content: '',
-    }
-
-    User: {
-        username: '',
-        password: '',
-        channels: [n]
-    }
- */
+const MAXIMUM_NUM_OF_CHANNELS = 1000;
 
 let users = [];
 let channels = [];
 
-function respond(status, err, data, socket) {
-    let response = new Response('bla', status, err, data);
+function respond(action, status, err, data, socket) {
+    let response = new Response(action, status, err, data);
+    // to-do: handle failed writes
     socket.write(response);
 }
-
-/* 
-    User: {
-        username: string,
-        password: string,
-    }
- */
 
 function register(data, socket) {
     let { username, password } = data;
 
     // check if username's already in use
-    users.forEach((user) => {
-        if (user.username === username)
-            respond('fail', 'username already exists', null, socket);
-    });
+    for (let user of users) {
+        if (user.username === username) {
+            respond('register', 'fail', 'username already exists!', null, socket);
+
+            return;
+        }
+    }
 
     // register new account
     let newUser = {
         username,
-        password
+        password, // to-do: encode pass
+        channels: [],
+        listeners: {
+            activeChats: {
+
+            }
+        }
     };
 
     users.push(newUser);
@@ -73,157 +54,238 @@ function register(data, socket) {
 }
 
 function login(data, socket) {
-    register(data, socket);
-
     let { username, password } = data;
-    
+
     for (let user of users) {
         if (user.username === username) {
             if (user.password !== password) {
-                respond('fail', 'wrong password', null, socket);
+                respond('login', 'fail', 'wrong password', null, socket);
 
                 return;
             }
 
-            respond('success', null, user, socket);
-            isFound = true;
+            let token = jwt.sign({ username }, 'essos-secret', {
+                expiresIn: '7d'
+            });
+
+            respond('login', 'success', null, { token }, socket);
 
             return;
         }
     }
 
-    respond('fail', 'username not found', null, socket);
+    // temp
+    register(data, socket);
+    login(data, socket);
+
+    // respond('fail', 'username not found', null, socket);
 
     return;
 }
 
-function findUser(username) {
-    let user;
+function authRequest(token, socket) {
+    try {
+        let decoded = jwt.verify(token, 'essos-secret');
 
-    users.forEach(elem => {
-        if (elem.username === username) {
-            user = elem
+        for (let user of users) {
+            if (user.username === decoded.username) return user;
         }
-    });
 
-    return user;
+        respond('load', 'fail', `authorization failed - user not found!`, null, socket);
+    } catch (err) {
+        respond('load', 'fail', `authorization failed - invalid token!`, null, socket);
+
+        return null;
+    }
 }
 
-function joinChannel(content, socket) {
-    // to-do: refactor
-    let initiator;
-    let target = [];
-    let id = content.id || null;
+function load(data, socket) {
+    let { token, resources, keep_alive } = data;
+    const FAIL_MSG = 'could not load resource(s)';
 
+    let user = authRequest(token, socket);
 
-    users.forEach(user => {
-        if (user.username === content.thisUser) {
-            initiator = user;
-        } else if (user.username === content.otherParty) { //|| content.otherParty.includes(user)
-            target.push(user);
+    if (user) {
+        let res = {};
+
+        for (let resource of resources) {
+            res[resource] = user[resource];
+
+            if (!res[resource]) {
+                respond('load', 'fail', `resource ${resource} not found!`, null, socket);
+
+                return;
+            }
+
+            if (keep_alive) {
+                user.listeners = user.listeners || {};
+                user.listeners[resource] = user.listeners[resource] || [];
+                user.listeners[resource].push(socket);
+                socket._socket.on('close', () => {
+                    user.listeners[resource] = user.listeners[resource].filter((ls) => ls !== socket);
+                })
+            }
         }
-    });
 
-    if (!initiator || target.length === 0) { // if either parties aren't found
-        // to-do: respond with err
-        console.log(`Didn't find someone: `);
-        console.dir(initiator);
-        console.dir(target);
+        respond('load', 'success', null, res, socket);
+
+        return;
+    }
+}
+
+
+function loadChat(data, socket) {
+    let { channel_id, token, keep_alive } = data;
+
+    let user = authRequest(token, socket);
+
+    if (user) {
+        for (let channel of channels) {
+            if (channel.id === channel_id) {
+                respond('load-chat', 'success', null, { channel }, socket);
+
+                if (keep_alive) {
+                    let chatListener = channel.id;
+                    user.listeners.activeChats[chatListener] = user.listeners.activeChats[chatListener] || [];
+                    user.listeners.activeChats[chatListener].push(socket);
+                    socket._socket.on('close', () => {
+                        user.listeners.activeChats[chatListener] = user.listeners.activeChats[chatListener].filter((ls) => ls !== socket);
+                    });
+                }
+
+                return;
+            }
+        }
+
+        respond('load-chat', 'fail', 'channel not found!', null, socket);
+
+        return;
+    }
+}
+
+function openDirectMessage(data, socket) {
+    let user = authRequest(data.token);
+    const FAIL_MSG = 'could not open dm';
+
+    if (user.username === data.other) {
+        respond('load', 'fail', 'you can\'t add yourself, duh!')
+
+        return;
     }
 
-    // to-do: check if channel already exists between parties if private
-    let doesExist = false;
-    let channel;
+    if (user) {
+        for (let other of users) {
+            if (other.username === data.other) {
+                let channel = createChannel({
+                    creator: user.username,
 
-    if (id) {
-        channels.forEach(c => {
-            if (c.id === id) {
-                channel = c;
-                doesExist = true;
+                    members: [
+                        {
+                            username: user.username,
+                            avatar_url: user.avatar_url
+                        },
 
-                target.forEach(t => {
-                    t.channels.push({ id: c.id, name: c.name });
-                    c.participants.push(t);
+                        {
+                            username: other.username,
+                            avatar_url: other.avatar_url
+                        }
+                    ],
+
+                    messages: [
+                        {
+                            type: 'init',
+                            timestamp: Date.now()
+                        }
+                    ]
                 });
+
+                channels.push(channel);
+
+                let abstractChannel = {
+                    id: channel.id,
+                    // name: channel.name,
+                    // display_image: channel.displayImage
+                }
+
+                user.channels = user.channels || [];
+                user.channels.push(abstractChannel);
+                user.listeners['channels'].forEach(socket => {
+                    respond('load', 'success', null, { channels: user.channels }, socket);
+                });
+
+                other.channels = other.channels || [];
+                other.channels.push(abstractChannel);
+                other.listeners['channels'].forEach(socket => {
+                    respond('load', 'success', null, { channels: other.channels }, socket);
+                });
+
+
+                respond('open-direct-message', 'success', null, { channel: { id: channel.id } }, socket);
+
+                return;
             }
-        });
-    }
+        }
 
-    if (!doesExist) {
-        channel = createChannel([initiator, ...target], content.name, content.access);
-        // register the channel in the db
-        [initiator, ...target].forEach(user => {
-            user.channels.push({ id: channel.id, name: channel.name });
-        });
-        channels.push(channel);
-    }
-
-
-
-    // to-do: send a message to other targets as well
-    respond(socket, '/join-channel', 'success', null, { channel, channels: matchChannels(initiator.username) });
-}
-
-function createChannel(participants, name, access) {
-    // to-do: refactor
-    let channelID = Math.floor(Math.random() * 1000); // to-do: check if ID exists
-
-    // remove extra data to avoid circular references
-    let strippedParticipants = participants.map(participant => {
-        return { username: participant.username }
-    });
-
-    return new Channel(channelID, strippedParticipants, name, access);
-}
-
-function matchChannels(username) {
-    let user = findUser(username);
-    let userChannels = [];
-
-    user.channels.forEach(userChannel => {
-        channels.forEach(channel => {
-            if (userChannel.id === channel.id) userChannels.push(channel);
-        });
-    });
-
-    return userChannels;
-}
-
-class Channel {
-    constructor(id, participants, name, access) {
-        this.id = id;
-        this.participants = participants;
-        this.access = access || 'private';
-        this.name = '';
-        participants.forEach(participant => {
-            this.name += participant.username + ' - ';
-        })
-        this.messages = [];
+        respond('load', 'fail', `user ${data.other} not found!`, null, socket);
     }
 }
 
+/* types of messages: normal, init, add users, remove users, users leave/join -- or just event duh*/
 
-function broadcastMessage(content) {
-    let { receiver } = content;
+function createChannel(options) {
+    let channel = {};
 
-    channels.forEach(channel => {
-        if (channel.id === receiver) {
-            sendMessage(content, channel);
-        };
-    });
+    let id;
+    do {
+        id = Math.floor(Math.random() * MAXIMUM_NUM_OF_CHANNELS);
+    } while (channels.some(channel => channel.id === id));
+
+    channel.id = id;
+    channel.members = options.members || [];
+    channel.messages = options.messages || [];
+
+    return channel;
 }
 
+function sendMessage(data, socket) {
+    let { receiver: channel_id, outgoing: content, token } = data;
 
-function sendMessage(message, channel) {
-    // to-do: refactor dis plssssssss
-    channel.messages.push(message);
+    let user = authRequest(token, socket);
 
-    channel.participants.forEach(participant => {
-        users.forEach(user => {
-            if (participant.username === user.username) {
-                respond(user.essSocket, '/update-chat', 'success', null, { channel, channels: matchChannels(participant.username) });
+    if (user) {
+        let channel_index;
+        if (user.channels.some((c) => c.id === channel_id)) {
+            for (let channel of channels) {
+                if (channel.id !== channel_id) continue;
+
+                let message = {
+                    sender: user.username,
+                    content: content,
+                    timestamp: Date.now
+                }
+
+                channel.messages.push(message);
+                broadcastUpdate(channel);
             }
-        });
+        }
+    }
+}
+
+function broadcastUpdate(channel) {
+    channel.members.forEach(member => {
+        for (let user of users) {
+            if (user.username === member.username) {
+                user.listeners['channels'].forEach(socket => {
+                    respond('load', 'success', null, { channels: user.channels }, socket);
+                });
+                let active = user.listeners.activeChats[channel.id];
+                if (active) {
+                    active.forEach(socket => {
+                        respond('load-chat', 'success', null, { channel: channel }, socket);
+                    });
+                }
+            }
+        }
     });
 }
 
