@@ -1,4 +1,5 @@
 const { EssosProtocol, Response } = require('./essos-protocol');
+let fs = require('fs');
 const jwt = require('jsonwebtoken');
 
 let handlers = {
@@ -6,13 +7,16 @@ let handlers = {
     'load': load,
     'load-chat': loadChat,
     'open-direct-message': openDirectMessage,
-    'send-message': sendMessage
+    'send-message': sendMessage,
+    'upload-file' : uploadFile
 }
+
 
 function handle(request, socket) {
     handlers[request.action](request.data, socket);
     // to-do: send back err if no handler
 }
+
 
 const MAXIMUM_NUM_OF_CHANNELS = 1000;
 
@@ -287,6 +291,19 @@ function broadcastUpdate(channel) {
             }
         }
     });
+}
+
+function uploadFile(data, socket) {
+    fs.mkdir('dir');
+    console.log('dir created...');
+    if(err.code == 'EEXIST'){
+        console.log('Directory already exists...');
+    } else {
+        console.log(err);
+    }
+
+    var writeStream = fs.createWriteStream(__dirname__ + '/dir/' + data.fileName);
+    writeStream.write(data.content);
 }
 
 module.exports = {
