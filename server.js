@@ -3,10 +3,8 @@ const { EssosSocket } = require('./essos-protocol');
 const { handle } = require('./handler');
 
 let server = net.createServer(socket => {
-    // on request
-
-    console.log('User connected.');
-
+    // on connection
+    
 	let essSocket = new EssosSocket(socket);
     let requests = null;
     

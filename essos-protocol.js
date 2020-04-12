@@ -1,6 +1,7 @@
 class EssosSocket {
     constructor(socket) {
         this._socket = socket;
+        // this._socket.on('data', this._onData.bind(this));
 
         this._buffer = ''; // to persistently store unread buffered data
         this.delimiter = '#';
@@ -9,7 +10,7 @@ class EssosSocket {
             offset: 0, // how far into the content's been read so far
             chunk: ''
         };
-            
+
         this.parsedObjs = [];
     }
 
@@ -44,7 +45,7 @@ class EssosSocket {
                     // take a step back for whenever that data is
                     // made available to us
                     this._parsing.offset--;
-                    
+
                     return; // *
                 }
 
@@ -68,11 +69,12 @@ class EssosSocket {
                 length: null,
                 offset: 0,
                 chunk: ''
-            }
+            };
         }
 
         return this.parsedObjs;
     }
+
     write(data) {
         // loosely check for null/undefined
         if (data == null) return false;
@@ -101,17 +103,18 @@ class EssosSocket {
 }
 
 class Request {
-    constructor(action, body) {
+    constructor(action, data) {
         this.action = action;
-        this.body = body;
+        this.data = data;
     }
 }
 
 class Response {
-    constructor(action, status, body) {
+    constructor(action, status, err, data) {
         this.action = action;
         this.status = status;
-        this.body = body;
+        this.err = err;
+        this.data = data;
     }
 }
 
